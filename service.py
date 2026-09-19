@@ -4,6 +4,9 @@ import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from study.api import Api
+from study.system import StudySystem
+
 SERVICE_ID = "intracranial-decision-study"
 SERVICE_NAME = "颅内决策实验编排"
 
@@ -13,15 +16,34 @@ def health_payload():
     return {"status": "ok", "service": SERVICE_ID, "name": SERVICE_NAME}
 
 
+def build_api():
+    return Api(StudySystem())
+
+
 class Handler(BaseHTTPRequestHandler):
-    """提供健康检查，并为领域接口保留清晰入口。"""
+    """提供健康检查，并把领域接口挂载到同一服务入口。"""
+
+    api = build_api()
 
     def do_GET(self):
-        if self.path != "/health":
-            self.send_error(404)
+        self._dispatch("GET")
+
+    def do_POST(self):
+        self._dispatch("POST")
+
+    def _dispatch(self, method):
+        path = self.path.split("?", 1)[0]
+        if method == "GET" and path == "/health":
+            self._send(200, health_payload())
             return
-        body = json.dumps(health_payload(), ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
+        length = int(self.headers.get("Content-Length") or 0)
+        raw_body = self.rfile.read(length) if length else b""
+        status, payload = self.api.handle(method, path, self.headers, raw_body)
+        self._send(status, payload)
+
+    def _send(self, status, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -38,6 +60,7 @@ def main():
     args = parser.parse_args()
     if args.check:
         assert health_payload()["service"] == SERVICE_ID
+        assert build_api() is not None
         print("基础检查通过")
         return
     ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
